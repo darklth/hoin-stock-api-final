@@ -1,15 +1,5 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/stock.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/stock.py"
-    }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/stock.py" }
   ]
 }
