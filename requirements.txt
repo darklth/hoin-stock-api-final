@@ -4,7 +4,4 @@ yfinance
 beautifulsoup4
 lxml
 pandas
-html5libflask
-requests
-beautifulsoup4
-yfinance
+html5lib
