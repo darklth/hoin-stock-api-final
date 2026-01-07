@@ -185,6 +185,58 @@ def get_ticker_by_name(name):
     return None
 
 
+# ✅ 영문 약어로 한국 종목 검색 (HPSP, LG, SK 등)
+def search_by_english_name(name):
+    """
+    영문 약어로 한국 종목 검색
+    예: HPSP, LG, SK, NAVER 등
+    
+    Args:
+        name (str): 영문 약어
+    
+    Returns:
+        str: 6자리 종목코드 또는 None
+    """
+    try:
+        # 네이버 통합 검색 API (영문 지원)
+        encoded_name = urllib.parse.quote(name)
+        url = f"https://m.stock.naver.com/api/search/itemList?query={encoded_name}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+            "Referer": "https://m.stock.naver.com/",
+            "Accept": "application/json"
+        }
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+        
+        items = data.get("result", {}).get("itemList", [])
+        if items:
+            # 영문 약어가 정확히 매칭되는 것 우선
+            for item in items:
+                code = item.get("code", "")
+                item_name = item.get("name", "")
+                reutersCode = item.get("reutersCode", "")  # 영문 약어
+                
+                # 영문 약어가 정확히 일치하거나, 종목명에 포함되는 경우
+                if code and code.isdigit() and len(code) == 6:
+                    if (reutersCode and name.upper() in reutersCode.upper()) or \
+                       (name.upper() in item_name.upper()):
+                        print(f"✅ [영문검색] {name} → {code} ({item_name})")
+                        return code
+            
+            # 정확히 매칭 안되면 첫 번째 결과 사용
+            first_item = items[0]
+            code = first_item.get("code", "")
+            if code and code.isdigit() and len(code) == 6:
+                print(f"✅ [영문검색-첫결과] {name} → {code}")
+                return code
+                
+    except Exception as e:
+        print(f"⚠️ 영문 검색 실패: {name} - {e}")
+    
+    return None
+
+
 # ✅ 메인 API 엔드포인트
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
@@ -213,7 +265,7 @@ def api_stock():
         "삼성전자": "005930",
         "이월드": "084680",
         "LS ELECTRIC": "010120",
-        "팜젠사이언스": "004720",  # ✅ 올바른 코드
+        "팜젠사이언스": "004720",
         "셀트리온": "068270",
         "카카오": "035720",
         "NAVER": "035420",
@@ -222,7 +274,8 @@ def api_stock():
         "현대차": "005380",
         "LG전자": "066570",
         "포스코홀딩스": "005490",
-        "기아": "000270"
+        "기아": "000270",
+        "HPSP": "403870"  # ✅ HPSP 추가
     }
 
     ticker = mapping.get(val) or mapping.get(val.upper()) or get_ticker_by_name(val)
@@ -242,9 +295,31 @@ def api_stock():
                 status=503
             )
 
-    # ✅ 미국 주식 처리
+    # ✅ 미국 주식 처리 (한국 주식 검색 실패 시에만)
     else:
+        # 영문만 있는 경우 한국/미국 둘 다 시도
         try:
+            # 한국 주식 재시도 (영문 약어의 경우)
+            if val.upper() == val and not ticker:
+                # 네이버 자동완성으로 영문 약어 검색
+                ticker = search_by_english_name(val)
+                if ticker:
+                    rt = get_korean_stock_price(ticker, include_debug)
+                    if rt:
+                        market = "KOSPI/KOSDAQ"
+                        res = {
+                            "success": True,
+                            "company_name": val,
+                            "ticker": ticker,
+                            "market": market,
+                            "real_time_data": rt
+                        }
+                        return Response(
+                            json.dumps(res, ensure_ascii=False),
+                            content_type="application/json; charset=utf-8"
+                        )
+            
+            # 미국 주식 시도
             ticker = val.upper()
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d")
