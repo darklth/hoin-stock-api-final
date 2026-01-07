@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-# ✅ 한국 주식 실시간 시세
+# ✅ 한국 주식 실시간 시세 (디버깅 추가)
 def get_korean_stock_price(ticker):
     url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:{ticker}"
     
@@ -22,13 +22,38 @@ def get_korean_stock_price(ticker):
         
         items = data.get('result', {}).get('areas', [{}])[0].get('datas', [])
         if items:
-            current_price = items[0].get('nv')
+            item = items[0]
+            
+            # ✅ 디버깅: 전체 데이터 출력 (Vercel 로그에서 확인 가능)
+            print(f"🔍 [{ticker}] 전체 응답 데이터:")
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+            
+            # ✅ 가능한 모든 가격 필드 확인
+            current_price = item.get('nv')  # 현재가
+            prev_close = item.get('pcv')     # 전일 종가
+            open_price = item.get('ov')      # 시가
+            high_price = item.get('hv')      # 고가
+            low_price = item.get('lv')       # 저가
+            
+            print(f"📊 현재가(nv): {current_price}")
+            print(f"📊 전일종가(pcv): {prev_close}")
+            print(f"📊 시가(ov): {open_price}")
+            print(f"📊 고가(hv): {high_price}")
+            print(f"📊 저가(lv): {low_price}")
+            
             if current_price:
                 return {
                     "current_price": f"{int(current_price):,}",
-                    "change_amount": f"{int(items[0].get('cv', 0)):,}",
-                    "change_rate": float(items[0].get('cr', 0)),
-                    "volume": f"{int(items[0].get('aq', 0)):,}"
+                    "change_amount": f"{int(item.get('cv', 0)):,}",
+                    "change_rate": float(item.get('cr', 0)),
+                    "volume": f"{int(item.get('aq', 0)):,}",
+                    # ✅ 디버깅용 추가 정보
+                    "debug_info": {
+                        "prev_close": f"{int(prev_close):,}" if prev_close else "N/A",
+                        "open": f"{int(open_price):,}" if open_price else "N/A",
+                        "high": f"{int(high_price):,}" if high_price else "N/A",
+                        "low": f"{int(low_price):,}" if low_price else "N/A"
+                    }
                 }
     except Exception as e:
         print(f"❌ 네이버 API 호출 실패: {e}")
@@ -73,6 +98,7 @@ def get_ticker_by_name(name):
         print(f"❌ 검색 에러: {e}")
     return None
 
+# ✅ 메인 API 엔드포인트
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
     val = (request.args.get("name") or "").strip()
@@ -152,5 +178,30 @@ def api_stock():
         content_type="application/json; charset=utf-8"
     )
 
-# ✅ Vercel Serverless Function용 (필수!)
-# Vercel은 이 부분을 자동으로 호출합니다
+# ✅ 디버깅용 엔드포인트 (네이버 API 원본 데이터 확인)
+@app.route("/api/debug", methods=["GET"])
+def api_debug():
+    ticker = request.args.get("ticker", "208340")  # 기본값: 팜젠사이언스
+    
+    url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:{ticker}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://finance.naver.com/",
+        "Accept": "*/*"
+    }
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        
+        return Response(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            content_type="application/json; charset=utf-8"
+        )
+    except Exception as e:
+        return Response(
+            json.dumps({"error": str(e)}, ensure_ascii=False),
+            content_type="application/json; charset=utf-8"
+        )
+
+# ✅ Vercel Serverless Function용 (자동으로 처리됨)
