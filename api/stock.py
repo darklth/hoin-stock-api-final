@@ -6,114 +6,91 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-# ✅ 한국 주식 실시간 시세 (디버깅 추가)
+# ✅ 한국 주식 실시간 시세 (모바일 기반 최신 버전)
 def get_korean_stock_price(ticker):
-    url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:{ticker}"
+    # 핵심: SERVICE_ITEM → SERVICE_RECENT_ITEM 으로 변경
+    url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_RECENT_ITEM:{ticker}"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://finance.naver.com/",
-        "Accept": "*/*"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        "Referer": f"https://m.stock.naver.com/item/main.nhn?code={ticker}",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://m.stock.naver.com"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=5)
         data = res.json()
-        
+
         items = data.get('result', {}).get('areas', [{}])[0].get('datas', [])
-        if items:
-            item = items[0]
-            
-            # ✅ 디버깅: 전체 데이터 출력 (Vercel 로그에서 확인 가능)
-            print(f"🔍 [{ticker}] 전체 응답 데이터:")
-            print(json.dumps(item, indent=2, ensure_ascii=False))
-            
-            # ✅ 가능한 모든 가격 필드 확인
-            current_price = item.get('nv')  # 현재가
-            prev_close = item.get('pcv')     # 전일 종가
-            open_price = item.get('ov')      # 시가
-            high_price = item.get('hv')      # 고가
-            low_price = item.get('lv')       # 저가
-            
-            print(f"📊 현재가(nv): {current_price}")
-            print(f"📊 전일종가(pcv): {prev_close}")
-            print(f"📊 시가(ov): {open_price}")
-            print(f"📊 고가(hv): {high_price}")
-            print(f"📊 저가(lv): {low_price}")
-            
-            if current_price:
-                return {
-                    "current_price": f"{int(current_price):,}",
-                    "change_amount": f"{int(item.get('cv', 0)):,}",
-                    "change_rate": float(item.get('cr', 0)),
-                    "volume": f"{int(item.get('aq', 0)):,}",
-                    # ✅ 디버깅용 추가 정보
-                    "debug_info": {
-                        "prev_close": f"{int(prev_close):,}" if prev_close else "N/A",
-                        "open": f"{int(open_price):,}" if open_price else "N/A",
-                        "high": f"{int(high_price):,}" if high_price else "N/A",
-                        "low": f"{int(low_price):,}" if low_price else "N/A"
-                    }
-                }
+        if not items:
+            return None
+        item = items[0]
+        
+        current_price = item.get('nv')
+        if not current_price:
+            return None
+        
+        return {
+            "current_price": f"{int(current_price):,}",
+            "change_amount": f"{int(item.get('cv', 0)):,}",
+            "change_rate": float(item.get('cr', 0)),
+            "volume": f"{int(item.get('aq', 0)):,}",
+            "debug_info": {
+                "prev_close": f"{int(item.get('pcv', 0)):,}",
+                "open": f"{int(item.get('ov', 0)):,}" if item.get('ov') else "N/A",
+                "high": f"{int(item.get('hv', 0)):,}" if item.get('hv') else "N/A",
+                "low": f"{int(item.get('lv', 0)):,}" if item.get('lv') else "N/A",
+                "timestamp": item.get('st', 'N/A')  # 서버 기준 시간
+            }
+        }
     except Exception as e:
         print(f"❌ 네이버 API 호출 실패: {e}")
-    
-    return None
+        return None
 
-# ✅ 네이버 종목명 -> 코드 변환 (강화 버전)
+
+# ✅ 네이버 종목명 → 코드 검색
 def get_ticker_by_name(name):
     try:
         encoded_name = urllib.parse.quote(name)
         url = f"https://finance.naver.com/search/searchList.naver?query={encoded_name}"
-        
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://finance.naver.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        
         res = requests.get(url, headers=headers, timeout=10)
         
-        # 1. 즉시 해당 종목 페이지로 이동한 경우
+        # 1️⃣ 즉시 redirect 되는 경우
         if "code=" in res.url:
             match = re.search(r'code=(\d{6})', res.url)
             if match: return match.group(1)
-            
-        # 2. 검색 결과 리스트 페이지인 경우
-        soup = BeautifulSoup(res.text, "html.parser")
         
-        # 여러 선택자 시도
+        # 2️⃣ 검색 결과 페이지인 경우
+        soup = BeautifulSoup(res.text, "html.parser")
         links = soup.select("a[href*='item/main.naver?code=']")
         if links:
             match = re.search(r'code=(\d{6})', links[0]['href'])
             if match: return match.group(1)
-        
-        # 추가 시도
-        link = soup.select_one(".section_search table.type_1 td.tit a")
-        if link and 'href' in link.attrs:
-            match = re.search(r'code=(\d{6})', link['href'])
-            if match: return match.group(1)
-            
     except Exception as e:
         print(f"❌ 검색 에러: {e}")
     return None
 
-# ✅ 메인 API 엔드포인트
+
+# ✅ 메인 API
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
     val = (request.args.get("name") or "").strip()
     if not val:
         return Response(
-            json.dumps({"error": "종목명을 입력하세요"}, ensure_ascii=False), 
+            json.dumps({"error": "종목명을 입력하세요"}, ensure_ascii=False),
             content_type="application/json; charset=utf-8"
         )
     
-    # 1. 국장 우선 검색 (사전 매핑 포함)
     mapping = {
-        "삼성전자": "005930", 
-        "이월드": "084680", 
+        "삼성전자": "005930",
+        "이월드": "084680",
         "LS ELECTRIC": "010120",
-        "팜젠사이언스": "208340",  # ✅ 추가
+        "팜젠사이언스": "208340",
         "셀트리온": "068270",
         "카카오": "035720",
         "NAVER": "035420",
@@ -124,6 +101,7 @@ def api_stock():
         "포스코홀딩스": "005490",
         "기아": "000270"
     }
+    
     ticker = mapping.get(val) or mapping.get(val.upper()) or get_ticker_by_name(val)
     
     if ticker and ticker.isdigit() and len(ticker) == 6:
@@ -139,33 +117,26 @@ def api_stock():
                 content_type="application/json; charset=utf-8"
             )
     else:
-        # 2. 미장 시도
+        # ✅ 미장 종목 처리
         try:
             ticker = val.upper()
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d")
-            
             if not hist.empty:
                 price = round(float(hist["Close"].iloc[-1]), 2)
                 rt = {"current_price": price}
                 market = "NASDAQ/NYSE"
             else:
-                return Response(
-                    json.dumps({
-                        "success": False,
-                        "error": f"'{val}' 종목을 찾을 수 없습니다. 정확한 종목명을 입력해주세요."
-                    }, ensure_ascii=False),
-                    content_type="application/json; charset=utf-8"
-                )
-        except Exception as e:
+                raise ValueError("데이터 없음")
+        except Exception:
             return Response(
                 json.dumps({
                     "success": False,
-                    "error": f"조회 실패"
+                    "error": f"'{val}' 종목을 찾을 수 없습니다."
                 }, ensure_ascii=False),
                 content_type="application/json; charset=utf-8"
             )
-    
+
     res = {
         "success": True,
         "company_name": val,
@@ -173,27 +144,24 @@ def api_stock():
         "market": market,
         "real_time_data": rt
     }
-    return Response(
-        json.dumps(res, ensure_ascii=False), 
-        content_type="application/json; charset=utf-8"
-    )
+    return Response(json.dumps(res, ensure_ascii=False),
+                    content_type="application/json; charset=utf-8")
 
-# ✅ 디버깅용 엔드포인트 (네이버 API 원본 데이터 확인)
+
+# ✅ 디버깅용 (원본 응답 보기)
 @app.route("/api/debug", methods=["GET"])
 def api_debug():
-    ticker = request.args.get("ticker", "208340")  # 기본값: 팜젠사이언스
-    
-    url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:{ticker}"
+    ticker = request.args.get("ticker", "208340")
+    url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_RECENT_ITEM:{ticker}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://finance.naver.com/",
-        "Accept": "*/*"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+        "Referer": f"https://m.stock.naver.com/item/main.nhn?code={ticker}",
+        "Accept": "application/json, text/plain, */*"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=5)
         data = res.json()
-        
         return Response(
             json.dumps(data, indent=2, ensure_ascii=False),
             content_type="application/json; charset=utf-8"
@@ -204,4 +172,6 @@ def api_debug():
             content_type="application/json; charset=utf-8"
         )
 
-# ✅ Vercel Serverless Function용 (자동으로 처리됨)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
