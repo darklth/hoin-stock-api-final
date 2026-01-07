@@ -275,7 +275,8 @@ def api_stock():
         "LG전자": "066570",
         "포스코홀딩스": "005490",
         "기아": "000270",
-        "HPSP": "403870"  # ✅ HPSP 추가
+        "HPSP": "403870",
+        "오픈엣지테크놀로지": "394280"  # ✅ 추가
     }
 
     ticker = mapping.get(val) or mapping.get(val.upper()) or get_ticker_by_name(val)
@@ -401,6 +402,36 @@ def api_debug():
             content_type="application/json; charset=utf-8",
             status=500
         )
+
+
+# ✅ 검색 테스트용 엔드포인트 (디버깅)
+@app.route("/api/search-test", methods=["GET"])
+def search_test():
+    """
+    종목명 검색 로직 테스트용
+    """
+    name = request.args.get("name", "오픈엣지테크놀로지")
+    
+    result = {
+        "input": name,
+        "results": {}
+    }
+    
+    # 전략별로 테스트
+    try:
+        result["results"]["strategy_1"] = get_ticker_by_name(name)
+    except Exception as e:
+        result["results"]["strategy_1_error"] = str(e)
+    
+    try:
+        result["results"]["english_search"] = search_by_english_name(name)
+    except Exception as e:
+        result["results"]["english_search_error"] = str(e)
+    
+    return Response(
+        json.dumps(result, indent=2, ensure_ascii=False),
+        content_type="application/json; charset=utf-8"
+    )
 
 
 # ✅ 헬스체크 엔드포인트
