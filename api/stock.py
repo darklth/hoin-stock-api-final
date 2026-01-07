@@ -99,7 +99,9 @@ def get_ticker_by_name_from_cache(name):
 
 # ✅ 한국 주식 실시간 시세
 def get_korean_stock_price(ticker, include_debug=False):
-    """네이버 모바일 API로 실시간 주식 시세 조회"""
+    """네이버 모바일 API로 실시간 주식 시세 조회 (Fallback 포함)"""
+    
+    # 방법 1: 네이버 폴링 API (가장 빠름)
     url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_RECENT_ITEM:{ticker}"
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
@@ -112,35 +114,82 @@ def get_korean_stock_price(ticker, include_debug=False):
         data = res.json()
         items = data.get("result", {}).get("areas", [{}])[0].get("datas", [])
         
-        if not items:
-            return None
-        
-        item = items[0]
-        current_price = item.get("nv")
-        
-        if not current_price:
-            return None
-
-        result = {
-            "current_price": f"{int(current_price):,}",
-            "change_amount": f"{int(item.get('cv', 0)):,}",
-            "change_rate": float(item.get("cr", 0)),
-            "volume": f"{int(item.get('aq', 0)):,}"
+        if items:
+            item = items[0]
+            current_price = item.get("nv")
+            
+            if current_price:
+                result = {
+                    "current_price": f"{int(current_price):,}",
+                    "change_amount": f"{int(item.get('cv', 0)):,}",
+                    "change_rate": float(item.get("cr", 0)),
+                    "volume": f"{int(item.get('aq', 0)):,}"
+                }
+                
+                if include_debug:
+                    result["debug_info"] = {
+                        "prev_close": f"{int(item.get('pcv', 0)):,}" if item.get('pcv') else "N/A",
+                        "open": f"{int(item.get('ov', 0)):,}" if item.get('ov') else "N/A",
+                        "high": f"{int(item.get('hv', 0)):,}" if item.get('hv') else "N/A",
+                        "low": f"{int(item.get('lv', 0)):,}" if item.get('lv') else "N/A",
+                        "source": "polling_api"
+                    }
+                
+                return result
+    except Exception as e:
+        print(f"⚠️ 폴링 API 실패: {e}")
+    
+    # 방법 2: 네이버 종목 페이지 HTML 파싱 (Fallback)
+    try:
+        print(f"🔄 Fallback: HTML 파싱 시도 - {ticker}")
+        url = f"https://finance.naver.com/item/main.naver?code={ticker}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        if include_debug:
-            result["debug_info"] = {
-                "prev_close": f"{int(item.get('pcv', 0)):,}" if item.get('pcv') else "N/A",
-                "open": f"{int(item.get('ov', 0)):,}" if item.get('ov') else "N/A",
-                "high": f"{int(item.get('hv', 0)):,}" if item.get('hv') else "N/A",
-                "low": f"{int(item.get('lv', 0)):,}" if item.get('lv') else "N/A"
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        
+        # 현재가 추출
+        price_element = soup.select_one(".rate_info .blind")
+        if not price_element:
+            price_element = soup.select_one("#_nowVal")
+        
+        if price_element:
+            current_price = price_element.text.strip().replace(',', '')
+            
+            # 전일대비
+            change_element = soup.select_one(".rate_info .blind + .blind")
+            change_amount = change_element.text.strip() if change_element else "0"
+            
+            # 등락률
+            rate_element = soup.select_one(".rate_info .blind + .blind + .blind")
+            change_rate_str = rate_element.text.strip().replace('%', '') if rate_element else "0"
+            
+            try:
+                change_rate = float(change_rate_str)
+            except:
+                change_rate = 0.0
+            
+            result = {
+                "current_price": f"{int(current_price):,}",
+                "change_amount": change_amount,
+                "change_rate": change_rate,
+                "volume": "N/A"
             }
-        
-        return result
-        
+            
+            if include_debug:
+                result["debug_info"] = {
+                    "source": "html_parsing"
+                }
+            
+            print(f"✅ HTML 파싱 성공: {ticker} = {result['current_price']}")
+            return result
+            
     except Exception as e:
-        print(f"❌ 시세 조회 실패: {e}")
-        return None
+        print(f"❌ HTML 파싱 실패: {e}")
+    
+    return None
 
 
 # ✅ 메인 API 엔드포인트
