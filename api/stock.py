@@ -65,10 +65,12 @@ def get_stock_code_by_name(name):
         return None
 
 
+# ✅ [변경 포인트] 자주 찾는 미국 주식 및 오타 방지용 사전 정의
 PREDEFINED = {
     "삼성전자": "005930", "LG전자": "066570", "이월드": "084680",
     "카카오": "035720", "하이브": "352820", "엔씨소프트": "036570",
-    "테슬라": "TSLA", "애플": "AAPL", "엔비디아": "NVDA"
+    "테슬라": "TSLA", "애플": "AAPL", "엔비디아": "NVDA",
+    "로켓랩": "RKLB", "로캣랩": "RKLB", "아이온큐": "IONQ"
 }
 
 
@@ -82,10 +84,16 @@ def stock_api():
         )
 
     val = val.strip()
+    
+    # 1. 먼저 PREDEFINED에 있는지 확인 (가장 빠름)
+    pre_ticker = PREDEFINED.get(val)
+    
+    # 2. 한글 판별
     is_korean = bool(re.search('[가-힣]', val))
 
-    if is_korean or (val.isdigit() and len(val) == 6):
-        ticker = PREDEFINED.get(val) or get_stock_code_by_name(val)
+    # ✅ 한국 주식으로 처리하는 경우: (한글이 포함됨 OR 숫자로만 된 6자리 코드임) AND 사전 정의가 미국주식이 아님
+    if (is_korean or (val.isdigit() and len(val) == 6)) and not (pre_ticker and pre_ticker.isalpha()):
+        ticker = pre_ticker or get_stock_code_by_name(val)
         if not ticker:
             return Response(
                 json.dumps({"error": f"'{val}' 종목을 찾을 수 없습니다."}, ensure_ascii=False),
@@ -93,10 +101,12 @@ def stock_api():
             )
         price = get_korean_stock_price(ticker)
         res = {"name": val, "ticker": ticker, "price": price, "market": "KOSPI/KOSDAQ"}
+    
+    # ✅ 미국 주식으로 처리하는 경우
     else:
-        ticker = val.upper()
+        ticker = pre_ticker or val.upper()
         price = get_us_stock_price(ticker)
-        res = {"name": ticker, "price": price, "market": "NASDAQ/NYSE"}
+        res = {"name": val, "ticker": ticker, "price": price, "market": "NASDAQ/NYSE"}
 
     return Response(
         json.dumps(res, ensure_ascii=False),
