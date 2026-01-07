@@ -1,7 +1,6 @@
-flask
+Flask
 requests
-yfinance
-beautifulsoup4
-lxml
 pandas
+lxml
 html5lib
+beautifulsoup4
