@@ -2,6 +2,7 @@ from flask import Flask, request, Response
 import requests
 import yfinance as yf
 import json
+import re
 
 app = Flask(__name__)
 
@@ -68,6 +69,7 @@ PREDEFINED = {
 
 @app.route("/api/stock", methods=["GET"])
 def stock_api():
+    # 1. 파라미터 가져오기
     val = request.args.get("name") or request.args.get("ticker")
     if not val:
         return Response(
@@ -77,8 +79,12 @@ def stock_api():
 
     val = val.strip()
 
-    # ✅ 한글 입력 → 한국 주식
-    if not val.isalpha():
+    # 2. 한글 포함 여부 확인 (정규표현식 활용)
+    # 가-힣 범위의 문자가 하나라도 있으면 한국 주식으로 간주합니다.
+    is_korean = bool(re.search('[가-힣]', val))
+
+    # ✅ 한글이 포함되어 있거나, 숫자로만 된 티커인 경우 → 한국 주식 로직
+    if is_korean or val.isdigit():
         ticker = PREDEFINED.get(val) or get_stock_code_by_name(val)
         if not ticker:
             return Response(
@@ -88,18 +94,18 @@ def stock_api():
         price = get_korean_stock_price(ticker)
         res = {"name": val, "ticker": ticker, "price": price, "market": "KOSPI/KOSDAQ"}
 
-    # ✅ 영문 입력 → 미국 주식
+    # ✅ 그 외 (영문으로만 구성된 경우) → 미국 주식 로직
     else:
         ticker = val.upper()
         price = get_us_stock_price(ticker)
         res = {"name": ticker, "price": price, "market": "NASDAQ/NYSE"}
 
+    # 3. 최종 응답 반환 (한글 깨짐 방지 설정 포함)
     return Response(
         json.dumps(res, ensure_ascii=False),
         content_type="application/json; charset=utf-8"
     )
 
 
-# ✅ 로컬 실행용 (Vercel 환경에서는 필요 없음)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
