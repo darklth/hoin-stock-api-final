@@ -1,5 +1,6 @@
 from flask import Flask, request, Response
 import requests, json, io
+import yfinance as yf
 from datetime import datetime, timedelta
 import pandas as pd
 
@@ -65,12 +66,85 @@ def get_korean_stock_price(ticker):
         print(f"❌ 실시간 조회 실패 ({ticker}): {e}")
         return None
 
-# 3. 메인 API 엔드포인트
+import yfinance as yf
+
+# ... (Previous imports remain, ensure yf is added)
+
+# 3. 한국 주식 검색 (기존 로직 분리)
+def search_korean_stock(name):
+    # 종목 코드를 캐시/KRX 리스트에서 찾기
+    stock_dict = fetch_all_stock_codes()
+    ticker = stock_dict.get(name) or stock_dict.get(name.upper())
+
+    # 별칭(Alias) 처리
+    ALIAS_MAP = {
+        "현대차": "현대자동차",
+    }
+    
+    if not ticker and name in ALIAS_MAP:
+        real_name = ALIAS_MAP[name]
+        ticker = stock_dict.get(real_name)
+
+    # 부분 일치 검색
+    if not ticker:
+        for k, v in stock_dict.items():
+            if name in k:
+                ticker = v
+                break
+    
+    if not ticker:
+        return None
+
+    # 실시간 시세 조회
+    rt = get_korean_stock_price(ticker)
+    if not rt:
+        return None
+
+    return {
+        "market": "KOSPI/KOSDAQ",
+        "company_name": name,
+        "ticker": ticker,
+        "real_time_data": rt
+    }
+
+# 4. 미국 주식 검색 (Yahoo Finance)
+def search_us_stock(name):
+    try:
+        ticker = yf.Ticker(name)
+        # fast_info가 더 빠르고 안정적일 수 있음
+        info = ticker.fast_info 
+        
+        # 유효성 체크: 시가총액이 없으면 없는 주식으로 간주 (혹은 history 체크)
+        if not info.market_cap:
+             return None
+
+        current_price = info.last_price
+        prev_close = info.previous_close
+        
+        change_amount = current_price - prev_close
+        change_rate = (change_amount / prev_close) * 100
+
+        return {
+            "market": "US (Yahoo Finance)",
+            "company_name": name.upper(),
+            "ticker": name.upper(),
+            "real_time_data": {
+                "current_price": f"{current_price:,.2f}",
+                "change_amount": f"{change_amount:,.2f}",
+                "change_rate": round(change_rate, 2),
+                "volume": f"{int(info.last_volume or 0):,}" 
+            }
+        }
+    except Exception as e:
+        print(f"DEBUG: US Stock search failed for {name}: {e}")
+        return None
+
+# 5. 메인 API 엔드포인트
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
     name = (request.args.get("name") or "").strip()
     
-    # 인코딩 보정 (로컬/서버 환경 차이 대응)
+    # 인코딩 보정
     try:
         name = name.encode('latin1').decode('utf-8')
     except (UnicodeEncodeError, UnicodeDecodeError):
@@ -79,40 +153,19 @@ def api_stock():
     if not name:
         return Response(json.dumps({"success": False, "error": "종목명 필요"}), content_type="application/json")
 
-    # 종목 코드를 캐시/KRX 리스트에서 찾기
-    stock_dict = fetch_all_stock_codes()
-    ticker = stock_dict.get(name) or stock_dict.get(name.upper())
+    # 1순위: 한국 주식 검색
+    res_data = search_korean_stock(name)
     
-    # 2. 별칭(Alias) 처리 (예: 현대차 -> 현대자동차)
-    ALIAS_MAP = {
-        "현대차": "현대자동차",
-        # 필요 시 별칭 추가
-    }
-    
-    if not ticker and name in ALIAS_MAP:
-        real_name = ALIAS_MAP[name]
-        ticker = stock_dict.get(real_name)
+    # 2순위: 한국 주식 없으면 미국 주식 검색
+    if not res_data:
+        res_data = search_us_stock(name)
 
-    # 3. 부분 일치 검색 (검색어가 종목명에 포함된 경우)
-    if not ticker:
-        for k, v in stock_dict.items():
-            if name in k:
-                ticker = v
-                break
-
-    if not ticker:
-        return Response(json.dumps({"success": False, "error": f"'{name}' 종목을 찾을 수 없습니다."}), content_type="application/json")
-
-    rt = get_korean_stock_price(ticker)
-    if not rt:
-        return Response(json.dumps({"success": False, "error": f"'{name}'({ticker}) 시세 조회 실패"}), content_type="application/json")
+    if not res_data:
+        return Response(json.dumps({"success": False, "error": f"'{name}' 종목을 찾을 수 없습니다. (한국/미국)"}), content_type="application/json")
 
     res = {
         "success": True,
-        "company_name": name,
-        "ticker": ticker,
-        "market": "KOSPI/KOSDAQ",
-        "real_time_data": rt,
+        **res_data, # merger market, company_name, ticker, real_time_data
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     return Response(json.dumps(res, ensure_ascii=False), content_type="application/json; charset=utf-8")

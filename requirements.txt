@@ -2,3 +2,4 @@ Flask
 requests
 pandas
 lxml
+yfinance<1.0
