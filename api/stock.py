@@ -3,10 +3,10 @@ import requests, yfinance as yf, json
 
 app = Flask(__name__)
 
-# ✅ 네이버 모바일 종목명 → 코드 검색 (2026년 최신)
+# ✅ 최신 네이버 모바일 종목 검색 API (2026년)
 def get_ticker_by_name(name: str):
     try:
-        url = f"https://m.stock.naver.com/api/stocks/search/{name}"
+        url = f"https://m.stock.naver.com/api/search/stock/{name}"
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
             "Accept": "application/json"
@@ -14,22 +14,20 @@ def get_ticker_by_name(name: str):
         res = requests.get(url, headers=headers, timeout=5)
         data = res.json()
 
-        # 결과 검증
-        items = data.get("stocks", [])
+        items = data.get("result", [])
         if not items:
             print(f"⚠️ 종목 검색 결과 없음: {name}")
             return None
 
-        # 첫 번째 결과 사용
         ticker = items[0].get("itemCode")
-        print(f"✅ 종목코드 매핑: {name} → {ticker}")
+        print(f"✅ 종목코드 매핑 성공: {name} → {ticker}")
         return ticker
     except Exception as e:
         print(f"❌ 종목 검색 실패: {e}")
         return None
 
 
-# ✅ 한국 주식 실시간 시세 (모바일 공식 API)
+# ✅ 네이버 모바일 실시간 주가 조회
 def get_korean_stock_price(ticker: str):
     try:
         url = f"https://m.stock.naver.com/api/stock/{ticker}/basic"
@@ -54,15 +52,13 @@ def get_korean_stock_price(ticker: str):
         return None
 
 
-# ✅ 미국 주식 시세 (Yahoo Finance)
+# ✅ 미국 주식 (Yahoo Finance)
 def get_us_stock_price(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period="1d")
-
         if hist.empty:
             return None
-
         price = round(float(hist["Close"].iloc[-1]), 2)
         return {
             "current_price": f"{price:,.2f}",
@@ -134,6 +130,5 @@ def health_check():
     )
 
 
-# ✅ Vercel 환경용
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
