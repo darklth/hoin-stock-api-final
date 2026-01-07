@@ -1,5 +1,5 @@
 from flask import Flask, request, Response
-import requests, json, urllib.parse, io, re
+import requests, json, io
 from datetime import datetime, timedelta
 import pandas as pd
 
