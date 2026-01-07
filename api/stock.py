@@ -3,7 +3,7 @@ import requests, yfinance as yf, json
 
 app = Flask(__name__)
 
-# ✅ 최신 네이버 모바일 종목 검색 API (2026년)
+# ✅ 네이버 최신 종목 검색 API (2026년)
 def get_ticker_by_name(name: str):
     try:
         url = f"https://m.stock.naver.com/api/search/stock/{name}"
@@ -14,12 +14,12 @@ def get_ticker_by_name(name: str):
         res = requests.get(url, headers=headers, timeout=5)
         data = res.json()
 
-        items = data.get("result", [])
-        if not items:
+        stocks = data.get("stocks", [])
+        if not stocks:
             print(f"⚠️ 종목 검색 결과 없음: {name}")
             return None
 
-        ticker = items[0].get("itemCode")
+        ticker = stocks[0].get("itemCode")
         print(f"✅ 종목코드 매핑 성공: {name} → {ticker}")
         return ticker
     except Exception as e:
@@ -39,6 +39,7 @@ def get_korean_stock_price(ticker: str):
         data = res.json()
 
         if not data or "now" not in data:
+            print(f"⚠️ 시세 데이터 없음: {ticker}")
             return None
 
         return {
