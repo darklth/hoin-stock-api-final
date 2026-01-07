@@ -69,6 +69,13 @@ def get_korean_stock_price(ticker):
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
     name = (request.args.get("name") or "").strip()
+    
+    # 인코딩 보정 (로컬/서버 환경 차이 대응)
+    try:
+        name = name.encode('latin1').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
     if not name:
         return Response(json.dumps({"success": False, "error": "종목명 필요"}), content_type="application/json")
 
@@ -76,7 +83,17 @@ def api_stock():
     stock_dict = fetch_all_stock_codes()
     ticker = stock_dict.get(name) or stock_dict.get(name.upper())
     
-    # 부분 일치 검색 (검색어가 종목명에 포함된 경우)
+    # 2. 별칭(Alias) 처리 (예: 현대차 -> 현대자동차)
+    ALIAS_MAP = {
+        "현대차": "현대자동차",
+        # 필요 시 별칭 추가
+    }
+    
+    if not ticker and name in ALIAS_MAP:
+        real_name = ALIAS_MAP[name]
+        ticker = stock_dict.get(real_name)
+
+    # 3. 부분 일치 검색 (검색어가 종목명에 포함된 경우)
     if not ticker:
         for k, v in stock_dict.items():
             if name in k:
