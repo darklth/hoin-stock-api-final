@@ -78,27 +78,32 @@ def get_ticker_by_name(name):
 
 # ====== ✅ 3. 실시간 시세 조회 ======
 def get_korean_stock_price(ticker):
-    """네이버 모바일 실시간 시세 API"""
+    """네이버 공식 API (api.stock.naver.com) 기반 실시간 시세 조회"""
     try:
-        url = f"https://m.stock.naver.com/api/stock/{ticker}/basic"
+        url = f"https://api.stock.naver.com/stock/{ticker}/basic"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=5)
+        
+        # 일부 환경에서는 403이 떨어질 수 있음 → 모바일 UA fallback
+        if res.status_code != 200:
+            headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+            res = requests.get(url, headers=headers, timeout=5)
+        
         data = res.json()
-
         price = data.get("now") or data.get("closePrice")
         if price is None:
             return None
 
-        result = {
+        return {
             "current_price": f"{int(price):,}",
             "change_amount": f"{int(data.get('diff', 0)):,}",
             "change_rate": data.get("rate", 0.0),
             "volume": f"{int(data.get('accVolume', 0)):,}"
         }
-        return result
     except Exception as e:
         print(f"⚠️ 실시간 조회 실패 ({ticker}): {e}")
         return None
+
 
 # ====== ✅ 4. 메인 API ======
 @app.route("/api/stock", methods=["GET"])
