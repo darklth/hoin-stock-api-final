@@ -37,19 +37,30 @@ def get_korean_stock_price(ticker):
     
     return None
 
-# ✅ 네이버 종목명 -> 코드 변환
+# ✅ 네이버 종목명 -> 코드 변환 (검색 로직 강화)
 def get_ticker_by_name(name):
     try:
+        # 검색어를 포함한 네이버 금융 검색 URL
         url = f"https://finance.naver.com/search/searchList.naver?query={name}"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if "item/main.naver?code=" in res.url:
-            return re.search(r'code=(\d{6})', res.url).group(1)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        # 1. 즉시 해당 종목 페이지로 이동한 경우 (URL에 code=6자리가 포함됨)
+        if "code=" in res.url:
+            match = re.search(r'code=(\d{6})', res.url)
+            if match: return match.group(1)
+            
+        # 2. 검색 결과 리스트 페이지인 경우 (HTML 파싱)
         soup = BeautifulSoup(res.text, "html.parser")
-        link = soup.select_one("table.type_1 tr:nth-child(2) td.tit a")
-        if link:
-            return re.search(r'code=(\d{6})', link['href']).group(1)
-    except:
-        return None
+        # 검색 결과 테이블에서 '종목명' 링크를 찾음
+        link = soup.select_one(".section_search table.type_1 td.tit a")
+        if link and 'href' in link.attrs:
+            match = re.search(r'code=(\d{6})', link['href'])
+            if match: return match.group(1)
+            
+    except Exception as e:
+        print(f"검색 에러: {e}")
+    return None
 
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
