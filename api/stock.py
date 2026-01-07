@@ -2,45 +2,123 @@ from flask import Flask, request, Response
 import requests, yfinance as yf, re, json
 import urllib.parse
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+import io
+import pandas as pd
 
 app = Flask(__name__)
 
-# ✅ 한국 주식 실시간 시세 (네이버 모바일 API 기반)
+# 전역 캐시 (메모리)
+STOCK_CODE_CACHE = {}
+CACHE_TIMESTAMP = None
+CACHE_DURATION = timedelta(hours=24)  # 24시간마다 갱신
+
+# ✅ KRX에서 전체 종목 리스트 가져오기
+def fetch_all_stock_codes():
+    """
+    KRX에서 전체 상장 종목의 종목코드와 종목명을 가져와서 캐싱
+    하루에 한 번만 업데이트
+    """
+    global STOCK_CODE_CACHE, CACHE_TIMESTAMP
+    
+    # 캐시가 유효한 경우
+    if CACHE_TIMESTAMP and datetime.now() - CACHE_TIMESTAMP < CACHE_DURATION:
+        if STOCK_CODE_CACHE:
+            print("✅ 캐시된 종목 리스트 사용")
+            return STOCK_CODE_CACHE
+    
+    print("🔄 KRX에서 최신 종목 리스트 다운로드 중...")
+    
+    try:
+        # KRX KIND 시스템에서 전체 종목 리스트 다운로드
+        url = "https://kind.krx.co.kr/corpgeneral/corpList.do"
+        params = {
+            'method': 'download',
+            'orderMode': '1',  # 회사명 오름차순
+            'searchType': '13'  # 전체
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        res = requests.get(url, params=params, headers=headers, timeout=30)
+        res.encoding = 'euc-kr'
+        
+        # HTML 테이블을 pandas로 파싱
+        df = pd.read_html(io.StringIO(res.text))[0]
+        
+        # 종목명 → 종목코드 매핑 생성
+        stock_dict = {}
+        for _, row in df.iterrows():
+            name = str(row['회사명']).strip()
+            code = str(row['종목코드']).strip().zfill(6)  # 6자리로 맞춤
+            
+            if name and code:
+                # 회사명 그대로
+                stock_dict[name] = code
+                # 대소문자 구분 없이
+                stock_dict[name.upper()] = code
+                stock_dict[name.lower()] = code
+        
+        STOCK_CODE_CACHE = stock_dict
+        CACHE_TIMESTAMP = datetime.now()
+        
+        print(f"✅ {len(stock_dict)} 개 종목 로드 완료")
+        return stock_dict
+        
+    except Exception as e:
+        print(f"❌ KRX 종목 리스트 다운로드 실패: {e}")
+        # 실패해도 기존 캐시 사용
+        return STOCK_CODE_CACHE if STOCK_CODE_CACHE else {}
+
+
+# ✅ 종목명으로 종목코드 찾기 (캐시 사용)
+def get_ticker_by_name_from_cache(name):
+    """
+    캐시된 KRX 종목 리스트에서 종목명으로 코드 찾기
+    """
+    stock_dict = fetch_all_stock_codes()
+    
+    # 정확히 일치하는 종목명 찾기
+    code = stock_dict.get(name) or stock_dict.get(name.upper()) or stock_dict.get(name.lower())
+    
+    if code:
+        print(f"✅ [캐시] {name} → {code}")
+        return code
+    
+    # 부분 일치 검색 (예: "삼성" 입력 시 "삼성전자" 찾기)
+    for stock_name, stock_code in stock_dict.items():
+        if name in stock_name or stock_name in name:
+            print(f"✅ [캐시-부분일치] {name} → {stock_code} ({stock_name})")
+            return stock_code
+    
+    print(f"⚠️ 캐시에서 찾을 수 없음: {name}")
+    return None
+
+
+# ✅ 한국 주식 실시간 시세
 def get_korean_stock_price(ticker, include_debug=False):
-    """
-    네이버 모바일 API로 실시간 주식 시세 조회
-    
-    Args:
-        ticker (str): 6자리 종목코드
-        include_debug (bool): 디버그 정보 포함 여부
-    
-    Returns:
-        dict: 주식 시세 정보 또는 None
-    """
+    """네이버 모바일 API로 실시간 주식 시세 조회"""
     url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_RECENT_ITEM:{ticker}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
         "Referer": f"https://m.stock.naver.com/item/main.nhn?code={ticker}",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://m.stock.naver.com"
+        "Accept": "application/json"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.raise_for_status()
         data = res.json()
-        
         items = data.get("result", {}).get("areas", [{}])[0].get("datas", [])
+        
         if not items:
-            print(f"⚠️ [{ticker}] API 응답에 데이터 없음")
             return None
         
         item = items[0]
         current_price = item.get("nv")
         
         if not current_price:
-            print(f"⚠️ [{ticker}] 현재가(nv) 데이터 없음")
             return None
 
         result = {
@@ -50,206 +128,25 @@ def get_korean_stock_price(ticker, include_debug=False):
             "volume": f"{int(item.get('aq', 0)):,}"
         }
         
-        # 디버그 정보 추가 (요청 시에만)
         if include_debug:
             result["debug_info"] = {
                 "prev_close": f"{int(item.get('pcv', 0)):,}" if item.get('pcv') else "N/A",
                 "open": f"{int(item.get('ov', 0)):,}" if item.get('ov') else "N/A",
                 "high": f"{int(item.get('hv', 0)):,}" if item.get('hv') else "N/A",
-                "low": f"{int(item.get('lv', 0)):,}" if item.get('lv') else "N/A",
-                "timestamp": item.get("st", "N/A")
+                "low": f"{int(item.get('lv', 0)):,}" if item.get('lv') else "N/A"
             }
         
         return result
         
-    except requests.exceptions.Timeout:
-        print(f"❌ [{ticker}] API 요청 타임아웃")
-    except requests.exceptions.RequestException as e:
-        print(f"❌ [{ticker}] API 요청 실패: {e}")
-    except (KeyError, ValueError, json.JSONDecodeError) as e:
-        print(f"❌ [{ticker}] 응답 파싱 실패: {e}")
     except Exception as e:
-        print(f"❌ [{ticker}] 예상치 못한 오류: {e}")
-    
-    return None
-
-
-# ✅ 네이버 종목명 → 종목코드 검색 (다중 전략)
-def get_ticker_by_name(name):
-    """
-    네이버 금융 검색으로 종목명을 6자리 종목코드로 변환
-    여러 방법을 시도하여 성공률 극대화
-    
-    Args:
-        name (str): 종목명
-    
-    Returns:
-        str: 6자리 종목코드 또는 None
-    """
-    
-    # 전략 1: 네이버 금융 PC 검색
-    try:
-        encoded_name = urllib.parse.quote(name)
-        url = f"https://finance.naver.com/search/searchList.naver?query={encoded_name}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://finance.naver.com/"
-        }
-        res = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-        
-        # 리다이렉트로 바로 종목 페이지로 이동한 경우
-        if "item/main.naver" in res.url and "code=" in res.url:
-            match = re.search(r"code=(\d{6})", res.url)
-            if match:
-                code = match.group(1)
-                print(f"✅ [전략1-리다이렉트] {name} → {code}")
-                return code
-        
-        # 검색 결과 페이지 파싱
-        soup = BeautifulSoup(res.text, "html.parser")
-        
-        # 방법 1: a 태그에서 code 찾기
-        links = soup.select("a[href*='item/main.naver?code=']")
-        if links:
-            for link in links[:3]:  # 상위 3개 결과 확인
-                match = re.search(r"code=(\d{6})", link.get("href", ""))
-                if match:
-                    code = match.group(1)
-                    print(f"✅ [전략1-링크] {name} → {code}")
-                    return code
-        
-        # 방법 2: td.tit 안의 링크 찾기
-        tit_links = soup.select("td.tit a")
-        if tit_links:
-            for link in tit_links[:3]:
-                match = re.search(r"code=(\d{6})", link.get("href", ""))
-                if match:
-                    code = match.group(1)
-                    print(f"✅ [전략1-테이블] {name} → {code}")
-                    return code
-                    
-    except Exception as e:
-        print(f"⚠️ [전략1] 실패: {e}")
-    
-    # 전략 2: 네이버 증권 모바일 검색 API
-    try:
-        encoded_name = urllib.parse.quote(name)
-        url = f"https://m.stock.naver.com/api/search/itemList?query={encoded_name}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
-            "Referer": "https://m.stock.naver.com/",
-            "Accept": "application/json"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        
-        # itemList에서 첫 번째 결과 추출
-        items = data.get("result", {}).get("itemList", [])
-        if items:
-            for item in items[:3]:  # 상위 3개 확인
-                code = item.get("code", "")
-                item_name = item.get("name", "")
-                if code and code.isdigit() and len(code) == 6:
-                    print(f"✅ [전략2-모바일API] {name} → {code} ({item_name})")
-                    return code
-                    
-    except Exception as e:
-        print(f"⚠️ [전략2] 실패: {e}")
-    
-    # 전략 3: 네이버 자동완성 API
-    try:
-        encoded_name = urllib.parse.quote(name)
-        url = f"https://ac.finance.naver.com/ac?q={encoded_name}&q_enc=euc-kr&t_koreng=1&st=111"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.naver.com/"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        # 응답 형식: query|종목명|code
-        lines = res.text.strip().split('\n')
-        if lines and lines[0] != "null":
-            for line in lines[:3]:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    code = parts[2].strip()
-                    if code.isdigit() and len(code) == 6:
-                        print(f"✅ [전략3-자동완성] {name} → {code}")
-                        return code
-                        
-    except Exception as e:
-        print(f"⚠️ [전략3] 실패: {e}")
-    
-    print(f"❌ 모든 검색 전략 실패: {name}")
-    return None
-
-
-# ✅ 영문 약어로 한국 종목 검색 (HPSP, LG, SK 등)
-def search_by_english_name(name):
-    """
-    영문 약어로 한국 종목 검색
-    예: HPSP, LG, SK, NAVER 등
-    
-    Args:
-        name (str): 영문 약어
-    
-    Returns:
-        str: 6자리 종목코드 또는 None
-    """
-    try:
-        # 네이버 통합 검색 API (영문 지원)
-        encoded_name = urllib.parse.quote(name)
-        url = f"https://m.stock.naver.com/api/search/itemList?query={encoded_name}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
-            "Referer": "https://m.stock.naver.com/",
-            "Accept": "application/json"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        
-        items = data.get("result", {}).get("itemList", [])
-        if items:
-            # 영문 약어가 정확히 매칭되는 것 우선
-            for item in items:
-                code = item.get("code", "")
-                item_name = item.get("name", "")
-                reutersCode = item.get("reutersCode", "")  # 영문 약어
-                
-                # 영문 약어가 정확히 일치하거나, 종목명에 포함되는 경우
-                if code and code.isdigit() and len(code) == 6:
-                    if (reutersCode and name.upper() in reutersCode.upper()) or \
-                       (name.upper() in item_name.upper()):
-                        print(f"✅ [영문검색] {name} → {code} ({item_name})")
-                        return code
-            
-            # 정확히 매칭 안되면 첫 번째 결과 사용
-            first_item = items[0]
-            code = first_item.get("code", "")
-            if code and code.isdigit() and len(code) == 6:
-                print(f"✅ [영문검색-첫결과] {name} → {code}")
-                return code
-                
-    except Exception as e:
-        print(f"⚠️ 영문 검색 실패: {name} - {e}")
-    
-    return None
+        print(f"❌ 시세 조회 실패: {e}")
+        return None
 
 
 # ✅ 메인 API 엔드포인트
 @app.route("/api/stock", methods=["GET"])
 def api_stock():
-    """
-    주식 정보 조회 API
-    
-    Query Parameters:
-        - name (required): 종목명 또는 티커
-        - debug (optional): "true"이면 디버그 정보 포함
-    
-    Returns:
-        JSON: 주식 시세 정보
-    """
+    """주식 정보 조회 API"""
     val = (request.args.get("name") or "").strip()
     include_debug = request.args.get("debug", "").lower() == "true"
     
@@ -260,27 +157,9 @@ def api_stock():
             status=400
         )
 
-    # 🚀 사전 매핑 (자주 조회되는 종목은 빠르게 처리)
-    mapping = {
-        "삼성전자": "005930",
-        "이월드": "084680",
-        "LS ELECTRIC": "010120",
-        "팜젠사이언스": "004720",
-        "셀트리온": "068270",
-        "카카오": "035720",
-        "NAVER": "035420",
-        "네이버": "035420",
-        "SK하이닉스": "000660",
-        "현대차": "005380",
-        "LG전자": "066570",
-        "포스코홀딩스": "005490",
-        "기아": "000270",
-        "HPSP": "403870",
-        "오픈엣지테크놀로지": "394280"  # ✅ 추가
-    }
-
-    ticker = mapping.get(val) or mapping.get(val.upper()) or get_ticker_by_name(val)
-
+    # 🚀 1단계: KRX 캐시에서 검색
+    ticker = get_ticker_by_name_from_cache(val)
+    
     # ✅ 한국 주식 처리
     if ticker and ticker.isdigit() and len(ticker) == 6:
         rt = get_korean_stock_price(ticker, include_debug)
@@ -296,31 +175,9 @@ def api_stock():
                 status=503
             )
 
-    # ✅ 미국 주식 처리 (한국 주식 검색 실패 시에만)
+    # ✅ 미국 주식 처리
     else:
-        # 영문만 있는 경우 한국/미국 둘 다 시도
         try:
-            # 한국 주식 재시도 (영문 약어의 경우)
-            if val.upper() == val and not ticker:
-                # 네이버 자동완성으로 영문 약어 검색
-                ticker = search_by_english_name(val)
-                if ticker:
-                    rt = get_korean_stock_price(ticker, include_debug)
-                    if rt:
-                        market = "KOSPI/KOSDAQ"
-                        res = {
-                            "success": True,
-                            "company_name": val,
-                            "ticker": ticker,
-                            "market": market,
-                            "real_time_data": rt
-                        }
-                        return Response(
-                            json.dumps(res, ensure_ascii=False),
-                            content_type="application/json; charset=utf-8"
-                        )
-            
-            # 미국 주식 시도
             ticker = val.upper()
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d")
@@ -332,10 +189,10 @@ def api_stock():
             rt = {"current_price": f"{price:,.2f}"}
             market = "NASDAQ/NYSE"
             
-            print(f"✅ 미국 주식 조회 성공: {ticker} = ${price}")
+            print(f"✅ 미국 주식: {ticker} = ${price}")
             
         except Exception as e:
-            print(f"❌ 미국 주식 조회 실패: {val} - {e}")
+            print(f"❌ 조회 실패: {val}")
             return Response(
                 json.dumps({
                     "success": False,
@@ -360,18 +217,31 @@ def api_stock():
     )
 
 
-# ✅ 디버그용 엔드포인트 (네이버 API 원본 응답 확인)
+# ✅ 캐시 갱신 엔드포인트
+@app.route("/api/refresh-cache", methods=["GET"])
+def refresh_cache():
+    """종목 캐시 강제 갱신"""
+    global CACHE_TIMESTAMP
+    CACHE_TIMESTAMP = None  # 캐시 무효화
+    
+    stock_dict = fetch_all_stock_codes()
+    
+    return Response(
+        json.dumps({
+            "success": True,
+            "message": f"{len(stock_dict)} 개 종목 로드 완료",
+            "cached_at": CACHE_TIMESTAMP.isoformat() if CACHE_TIMESTAMP else None
+        }, ensure_ascii=False),
+        content_type="application/json; charset=utf-8"
+    )
+
+
+# ✅ 디버그용 엔드포인트
 @app.route("/api/debug", methods=["GET"])
 def api_debug():
-    """
-    네이버 API 원본 응답 확인용 디버그 엔드포인트
+    """네이버 API 원본 응답 확인"""
+    ticker = request.args.get("ticker", "005930")
     
-    Query Parameters:
-        - ticker: 6자리 종목코드 (기본값: 208340 - 팜젠사이언스)
-    """
-    ticker = request.args.get("ticker", "208340")
-    
-    # 티커 검증
     if not (ticker.isdigit() and len(ticker) == 6):
         return Response(
             json.dumps({"error": "6자리 종목코드를 입력하세요"}, ensure_ascii=False),
@@ -382,14 +252,11 @@ def api_debug():
     url = f"https://polling.finance.naver.com/api/realtime?query=SERVICE_RECENT_ITEM:{ticker}"
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
-        "Referer": f"https://m.stock.naver.com/item/main.nhn?code={ticker}",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://m.stock.naver.com"
+        "Referer": f"https://m.stock.naver.com/item/main.nhn?code={ticker}"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        res.raise_for_status()
         data = res.json()
         
         return Response(
@@ -398,52 +265,32 @@ def api_debug():
         )
     except Exception as e:
         return Response(
-            json.dumps({"error": f"API 호출 실패: {str(e)}"}, ensure_ascii=False),
+            json.dumps({"error": str(e)}, ensure_ascii=False),
             content_type="application/json; charset=utf-8",
             status=500
         )
 
 
-# ✅ 검색 테스트용 엔드포인트 (디버깅)
-@app.route("/api/search-test", methods=["GET"])
-def search_test():
-    """
-    종목명 검색 로직 테스트용
-    """
-    name = request.args.get("name", "오픈엣지테크놀로지")
-    
-    result = {
-        "input": name,
-        "results": {}
-    }
-    
-    # 전략별로 테스트
-    try:
-        result["results"]["strategy_1"] = get_ticker_by_name(name)
-    except Exception as e:
-        result["results"]["strategy_1_error"] = str(e)
-    
-    try:
-        result["results"]["english_search"] = search_by_english_name(name)
-    except Exception as e:
-        result["results"]["english_search_error"] = str(e)
-    
-    return Response(
-        json.dumps(result, indent=2, ensure_ascii=False),
-        content_type="application/json; charset=utf-8"
-    )
-
-
-# ✅ 헬스체크 엔드포인트
+# ✅ 헬스체크
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """서버 상태 확인용"""
+    """서버 상태 확인"""
+    cache_info = {
+        "cached_stocks": len(STOCK_CODE_CACHE),
+        "cache_age_hours": (datetime.now() - CACHE_TIMESTAMP).total_seconds() / 3600 if CACHE_TIMESTAMP else None,
+        "cache_valid": CACHE_TIMESTAMP and (datetime.now() - CACHE_TIMESTAMP < CACHE_DURATION)
+    }
+    
     return Response(
-        json.dumps({"status": "healthy", "service": "stock-api"}, ensure_ascii=False),
+        json.dumps({
+            "status": "healthy",
+            "service": "stock-api",
+            "cache": cache_info
+        }, ensure_ascii=False),
         content_type="application/json; charset=utf-8"
     )
 
 
-# ✅ Vercel 환경 자동 인식 (로컬 개발용)
+# ✅ Vercel 환경 자동 인식
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
