@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 # ✅ 한국 주식 실시간 시세 (네이버 모바일 API 보강 버전)
 def get_korean_stock_price(ticker):
-    url = f"https://m.stock.naver.com/api/item/getPriceInfo.nhn?code={ticker}"
+    url = f"https://finance.naver.com/item/main.naver?code={ticker}"
     
     # 💡 브라우저처럼 보이기 위한 필수 헤더 보강
     headers = {
